@@ -8,6 +8,20 @@ import { parseCSV, calculateStats, formatCurrency, filterTransactions } from './
 import { RevenueAreaChart, TopPackagesBarChart, GenericDonutChart } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
 
+// Component defined outside to prevent re-creation on every render
+const KPICard = ({ title, value, subtext, icon: Icon, colorClass }: any) => (
+  <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex items-start justify-between hover:shadow-md transition-shadow w-full">
+    <div>
+      <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+      <h3 className="text-2xl font-bold mt-1 text-gray-900 dark:text-white truncate">{value}</h3>
+      {subtext && <p className="text-xs mt-2 text-gray-400 dark:text-gray-500">{subtext}</p>}
+    </div>
+    <div className={`p-3 rounded-lg ${colorClass} shrink-0 ml-4`}>
+      <Icon size={24} />
+    </div>
+  </div>
+);
+
 const App: React.FC = () => {
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [darkMode, setDarkMode] = useState(true);
@@ -115,19 +129,6 @@ const App: React.FC = () => {
     if (filteredTransactions.length === 0) return null; 
     return calculateStats(filteredTransactions);
   }, [filteredTransactions, allTransactions]);
-
-  const KPICard = ({ title, value, subtext, icon: Icon, colorClass }: any) => (
-    <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex items-start justify-between hover:shadow-md transition-shadow w-full">
-      <div>
-        <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
-        <h3 className="text-2xl font-bold mt-1 text-gray-900 dark:text-white truncate">{value}</h3>
-        {subtext && <p className="text-xs mt-2 text-gray-400 dark:text-gray-500">{subtext}</p>}
-      </div>
-      <div className={`p-3 rounded-lg ${colorClass} shrink-0 ml-4`}>
-        <Icon size={24} />
-      </div>
-    </div>
-  );
 
   return (
     <div className="min-h-screen w-full bg-gray-50 dark:bg-dark transition-colors duration-300 pb-20">
