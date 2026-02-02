@@ -128,49 +128,22 @@ export const parseCSV = (csvText: string): Transaction[] => {
   return transactions;
 };
 
-// Funções de Filtro
-export type DateRangeType = 'all' | 'today' | 'week' | 'month' | 'year';
-
+// Funções de Filtro atualizadas para suportar Start/End Date
 export const filterTransactions = (
   transactions: Transaction[], 
   operator: string, 
-  dateRange: DateRangeType
+  startDate: string,
+  endDate: string
 ): Transaction[] => {
-  const now = new Date();
-  // Zera horas para comparação justa de datas
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
   return transactions.filter(t => {
     // Filtro de Operadora
     if (operator !== 'Todos' && t.operator !== operator) {
       return false;
     }
 
-    // Filtro de Data
-    if (dateRange === 'all') return true;
-
-    // Converte string YYYY-MM-DD para Date
-    // Adiciona T00:00:00 para garantir timezone local no parse simples ou split manual
-    const parts = t.date.split('-');
-    const itemDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-
-    if (dateRange === 'today') {
-        return itemDate.getTime() === today.getTime();
-    }
-    
-    if (dateRange === 'week') {
-      const oneWeekAgo = new Date(today);
-      oneWeekAgo.setDate(today.getDate() - 7);
-      return itemDate >= oneWeekAgo && itemDate <= now;
-    }
-
-    if (dateRange === 'month') {
-      return itemDate.getMonth() === today.getMonth() && itemDate.getFullYear() === today.getFullYear();
-    }
-
-    if (dateRange === 'year') {
-      return itemDate.getFullYear() === today.getFullYear();
-    }
+    // Filtro de Data (Comparação de String ISO YYYY-MM-DD funciona corretamente)
+    if (startDate && t.date < startDate) return false;
+    if (endDate && t.date > endDate) return false;
 
     return true;
   });

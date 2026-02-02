@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Upload, Moon, Sun, TrendingUp, DollarSign, Users, 
-  ShoppingCart, Activity, FileText, AlertCircle, Filter
+  ShoppingCart, Activity, FileText, AlertCircle, Filter, Calendar
 } from 'lucide-react';
-import { Transaction, DashboardStats } from './types';
-import { parseCSV, calculateStats, formatCurrency, filterTransactions, DateRangeType } from './utils/helpers';
+import { Transaction } from './types';
+import { parseCSV, calculateStats, formatCurrency, filterTransactions } from './utils/helpers';
 import { RevenueAreaChart, TopPackagesBarChart, GenericDonutChart } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
 
@@ -16,7 +16,7 @@ const App: React.FC = () => {
 
   // Filters State
   const [selectedOperator, setSelectedOperator] = useState<string>('Todos');
-  const [selectedDateRange, setSelectedDateRange] = useState<DateRangeType>('all');
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
 
   useEffect(() => {
     const isDark = localStorage.getItem('theme') !== 'light';
@@ -58,7 +58,7 @@ const App: React.FC = () => {
           setAllTransactions(parsedData);
           // Reset filters on new upload
           setSelectedOperator('Todos');
-          setSelectedDateRange('all');
+          setDateRange({ start: '', end: '' });
         }
       } catch (err) {
         setError("Erro ao processar o arquivo. Certifique-se que é um CSV válido.");
@@ -70,6 +70,33 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
+  // Helper for preset date buttons
+  const applyDatePreset = (preset: 'today' | 'month' | 'year' | 'all') => {
+    const today = new Date();
+    const end = today.toISOString().split('T')[0];
+    let start = '';
+
+    if (preset === 'today') {
+        start = end;
+    } else if (preset === 'month') {
+        const d = new Date(today.getFullYear(), today.getMonth(), 1);
+        start = d.toISOString().split('T')[0];
+    } else if (preset === 'year') {
+        const d = new Date(today.getFullYear(), 0, 1);
+        start = d.toISOString().split('T')[0];
+    } else {
+        // All time
+        start = ''; 
+    }
+
+    // For 'all', we clear both. For others, we set start/end.
+    if (preset === 'all') {
+        setDateRange({ start: '', end: '' });
+    } else {
+        setDateRange({ start, end });
+    }
+  };
+
   // Extract unique operators for dropdown
   const operators = useMemo(() => {
     const ops = new Set(allTransactions.map(t => t.operator));
@@ -79,13 +106,13 @@ const App: React.FC = () => {
 
   // Filter transactions dynamically
   const filteredTransactions = useMemo(() => {
-    return filterTransactions(allTransactions, selectedOperator, selectedDateRange);
-  }, [allTransactions, selectedOperator, selectedDateRange]);
+    return filterTransactions(allTransactions, selectedOperator, dateRange.start, dateRange.end);
+  }, [allTransactions, selectedOperator, dateRange]);
 
   // Recalculate stats based on filtered data
   const stats = useMemo(() => {
     if (filteredTransactions.length === 0 && allTransactions.length === 0) return null;
-    if (filteredTransactions.length === 0) return null; // Or handle empty filter result differently
+    if (filteredTransactions.length === 0) return null; 
     return calculateStats(filteredTransactions);
   }, [filteredTransactions, allTransactions]);
 
@@ -172,19 +199,19 @@ const App: React.FC = () => {
           <div className="space-y-6 animate-fade-in w-full">
             
             {/* Filter Bar */}
-            <div className="bg-white dark:bg-dark-card p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col md:flex-row gap-4 items-center justify-between">
-              <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300 w-full md:w-auto">
-                 <Filter size={20} className="text-primary" />
-                 <span className="font-semibold text-sm">Filtros:</span>
-              </div>
+            <div className="bg-white dark:bg-dark-card p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between">
               
-              <div className="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
-                {/* Operator Select */}
-                <div className="relative">
+              {/* Operator */}
+              <div className="flex items-center gap-3 w-full xl:w-auto">
+                 <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                    <Filter size={20} className="text-primary" />
+                    <span className="font-semibold text-sm hidden sm:inline">Filtros:</span>
+                 </div>
+                 <div className="relative flex-grow sm:flex-grow-0">
                   <select 
                     value={selectedOperator}
                     onChange={(e) => setSelectedOperator(e.target.value)}
-                    className="w-full sm:w-48 appearance-none bg-gray-50 dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 py-2 px-4 pr-8 rounded-lg leading-tight focus:outline-none focus:border-primary transition-colors cursor-pointer"
+                    className="w-full sm:w-48 appearance-none bg-gray-50 dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 py-2 px-4 pr-8 rounded-lg leading-tight focus:outline-none focus:border-primary transition-colors cursor-pointer text-sm"
                   >
                     {operators.map(op => (
                       <option key={op} value={op}>{op}</option>
@@ -194,29 +221,37 @@ const App: React.FC = () => {
                     <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
                   </div>
                 </div>
+              </div>
 
-                {/* Date Filter Buttons */}
-                <div className="flex bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
-                  {[
-                    { key: 'today', label: 'Hoje' },
-                    { key: 'week', label: 'Semana' },
-                    { key: 'month', label: 'Mês' },
-                    { key: 'year', label: 'Ano' },
-                    { key: 'all', label: 'Tudo' }
-                  ].map((range) => (
-                    <button
-                      key={range.key}
-                      onClick={() => setSelectedDateRange(range.key as DateRangeType)}
-                      className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all ${
-                        selectedDateRange === range.key
-                          ? 'bg-white dark:bg-slate-600 text-primary shadow-sm'
-                          : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                      }`}
-                    >
-                      {range.label}
-                    </button>
-                  ))}
+              {/* Date Filters */}
+              <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto items-start sm:items-center">
+                
+                {/* Inputs */}
+                <div className="flex items-center gap-2 bg-gray-50 dark:bg-slate-800 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
+                   <Calendar size={16} className="ml-2 text-gray-400" />
+                   <input 
+                      type="date" 
+                      value={dateRange.start}
+                      onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                      className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none p-1 w-32"
+                   />
+                   <span className="text-gray-400 text-xs">até</span>
+                   <input 
+                      type="date" 
+                      value={dateRange.end}
+                      onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                      className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none p-1 w-32"
+                   />
                 </div>
+
+                {/* Presets */}
+                <div className="flex gap-1 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
+                  <button onClick={() => applyDatePreset('today')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition">Hoje</button>
+                  <button onClick={() => applyDatePreset('month')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition whitespace-nowrap">Este Mês</button>
+                  <button onClick={() => applyDatePreset('year')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition whitespace-nowrap">Este Ano</button>
+                  <button onClick={() => applyDatePreset('all')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 transition">Limpar</button>
+                </div>
+
               </div>
             </div>
 

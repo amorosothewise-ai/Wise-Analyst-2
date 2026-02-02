@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Transaction, SortField, SortDirection } from '../types';
 import { formatCurrency } from '../utils/helpers';
 import { Search, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
@@ -14,6 +14,11 @@ export const TransactionTable: React.FC<Props> = ({ data }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortField, setSortField] = useState<SortField>(SortField.DATE);
   const [sortDirection, setSortDirection] = useState<SortDirection>(SortDirection.DESC);
+
+  // Reset to first page when data changes (e.g., filters applied)
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [data]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
