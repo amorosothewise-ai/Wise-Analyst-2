@@ -1,4 +1,6 @@
 import { Transaction, DashboardStats } from '../types';
+import * as XLSX from 'xlsx';
+import ParserWorker from '../workers/parser.worker?worker';
 
 // Formata moeda para Metical Moçambicano
 export const formatCurrency = (value: number): string => {
@@ -33,8 +35,11 @@ export const normalizeDate = (dateStr: string): string => {
   return cleanDate.split('T')[0];
 };
 
-// Remove aspas e espaços extras
+// Remove aspas, espaços extras e normaliza para comparação
 const cleanValue = (val: string) => val ? val.trim().replace(/"/g, '') : '';
+
+// Normaliza nomes para agrupamento (evita duplicatas por capitalização ou espaços)
+export const normalizeName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
 
 // Parser numérico robusto
 const parseMoney = (val: string | undefined): number => {
@@ -44,7 +49,7 @@ const parseMoney = (val: string | undefined): number => {
 };
 
 // Regras de Negócio para Cálculo de Lucro
-const calculateEconomics = (pkg: string, saleVal: number, costVal: number, profitVal: number) => {
+const calculateEconomics = (saleVal: number, costVal: number, profitVal: number) => {
   let cost = costVal;
   let profit = profitVal;
   const sale = saleVal;
@@ -89,6 +94,7 @@ export const parseCSV = (csvText: string): Transaction[] => {
     const getVal = (idx: number) => idx !== -1 ? values[idx] : '';
 
     const pkg = getVal(idxPackage) || 'Geral';
+    const client = getVal(idxClient) || 'Desconhecido';
     const rawSale = parseMoney(getVal(idxSale));
     let rawCost = parseMoney(getVal(idxCost));
     let rawProfit = parseMoney(getVal(idxProfit));
@@ -106,7 +112,7 @@ export const parseCSV = (csvText: string): Transaction[] => {
         }
         rawCost = rawSale - rawProfit;
     } else {
-        const { cost, profit } = calculateEconomics(pkg, rawSale, rawCost, rawProfit);
+        const { cost, profit } = calculateEconomics(rawSale, rawCost, rawProfit);
         rawCost = cost;
         rawProfit = profit;
     }
@@ -115,7 +121,7 @@ export const parseCSV = (csvText: string): Transaction[] => {
       id: generateId(),
       date: normalizeDate(getVal(idxDate)),
       operator: getVal(idxOperator) || 'Outros',
-      client: getVal(idxClient) || 'Desconhecido',
+      client: client,
       package: pkg,
       category: getVal(idxCategory) || 'Geral',
       saleValue: rawSale,
@@ -158,13 +164,18 @@ export const calculateStats = (data: Transaction[]): DashboardStats => {
   const avgTicket = salesCount > 0 ? totalRevenue / salesCount : 0;
 
   const countByField = (field: keyof Transaction, limit = 10) => {
-    const map = new Map<string, number>();
+    const map = new Map<string, { count: number; originalName: string }>();
     data.forEach(t => {
-      const val = String(t[field]);
-      map.set(val, (map.get(val) || 0) + 1);
+      const rawVal = String(t[field]);
+      const normalized = normalizeName(rawVal);
+      const current = map.get(normalized) || { count: 0, originalName: rawVal };
+      map.set(normalized, { 
+        count: current.count + 1, 
+        originalName: current.originalName // Keep the first occurrence's casing
+      });
     });
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
+    return Array.from(map.values())
+      .map(item => ({ name: item.originalName, value: item.count }))
       .sort((a, b) => b.value - a.value)
       .slice(0, limit);
   };
@@ -190,16 +201,18 @@ export const calculateStats = (data: Transaction[]): DashboardStats => {
       profit: Number(val.profit.toFixed(2))
     }));
 
-  const clientMap = new Map<string, { spent: number; count: number }>();
+  const clientMap = new Map<string, { spent: number; count: number; originalName: string }>();
   data.forEach(t => {
-    const current = clientMap.get(t.client) || { spent: 0, count: 0 };
-    clientMap.set(t.client, {
+    const normalized = normalizeName(t.client);
+    const current = clientMap.get(normalized) || { spent: 0, count: 0, originalName: t.client };
+    clientMap.set(normalized, {
       spent: current.spent + t.saleValue,
-      count: current.count + 1
+      count: current.count + 1,
+      originalName: current.originalName
     });
   });
-  const topClients = Array.from(clientMap.entries())
-    .map(([name, val]) => ({ name, totalSpent: val.spent, transactions: val.count }))
+  const topClients = Array.from(clientMap.values())
+    .map(val => ({ name: val.originalName, totalSpent: val.spent, transactions: val.count }))
     .sort((a, b) => b.totalSpent - a.totalSpent)
     .slice(0, 5);
 
@@ -216,4 +229,119 @@ export const calculateStats = (data: Transaction[]): DashboardStats => {
     statusDistribution,
     topClients
   };
+};
+
+// Processa array de objetos (JSON ou Excel)
+const processJSONData = (data: any[]): Transaction[] => {
+  if (!data || data.length === 0) return [];
+  
+  // Identifica as chaves baseadas em possíveis nomes
+  const getField = (row: any, searchTerms: string[]) => {
+    const key = Object.keys(row).find(k => searchTerms.some(s => k.toLowerCase().includes(s.toLowerCase())));
+    return key ? row[key] : '';
+  };
+
+  return data.map(row => {
+    const pkg = cleanValue(String(getField(row, ['pacote', 'package']))) || 'Geral';
+    const client = cleanValue(String(getField(row, ['cliente', 'client', 'nome']))) || 'Desconhecido';
+    
+    // Extrai valores brutos
+    let rawSale = 0;
+    let rawCost = 0;
+    let rawProfit = 0;
+    
+    const saleField = getField(row, ['valor venda', 'venda', 'sale', 'price', 'valor']);
+    if (saleField !== undefined && saleField !== '') rawSale = typeof saleField === 'number' ? saleField : parseMoney(String(saleField));
+    
+    const costField = getField(row, ['custo', 'cost']);
+    if (costField !== undefined && costField !== '') rawCost = typeof costField === 'number' ? costField : parseMoney(String(costField));
+    
+    const profitField = getField(row, ['lucro', 'profit']);
+    if (profitField !== undefined && profitField !== '') rawProfit = typeof profitField === 'number' ? profitField : parseMoney(String(profitField));
+
+    if (rawCost === 0 && rawProfit === 0) {
+        const pkgLower = pkg.toLowerCase();
+        if (pkgLower.includes('crédito 500')) {
+            rawProfit = 90;
+        } else if (pkgLower.includes('1024mb')) {
+            rawProfit = 6;
+        } else if (pkgLower.includes('5gb')) {
+            rawProfit = 20;
+        } else {
+            rawProfit = rawSale * 0.15;
+        }
+        rawCost = rawSale - rawProfit;
+    } else {
+        const { cost, profit } = calculateEconomics(rawSale, rawCost, rawProfit);
+        rawCost = cost;
+        rawProfit = profit;
+    }
+
+    // Lida com datas do Excel (números de série)
+    let dateStr = getField(row, ['data', 'date']);
+    if (typeof dateStr === 'number') {
+      const excelEpoch = new Date(1899, 11, 30);
+      const date = new Date(excelEpoch.getTime() + (dateStr - 1) * 86400000);
+      dateStr = date.toISOString().split('T')[0];
+    } else {
+      dateStr = normalizeDate(cleanValue(String(dateStr)));
+    }
+
+    return {
+      id: generateId(),
+      date: dateStr,
+      operator: cleanValue(String(getField(row, ['operadora', 'operator']))) || 'Outros',
+      client: client,
+      package: pkg,
+      category: cleanValue(String(getField(row, ['categoria', 'category']))) || 'Geral',
+      saleValue: rawSale,
+      cost: Number(rawCost.toFixed(2)),
+      profit: Number(rawProfit.toFixed(2)),
+      status: cleanValue(String(getField(row, ['status', 'estado']))) || 'Pendente'
+    };
+  });
+};
+
+// Função principal para processar diferentes tipos de arquivos usando Web Worker
+export const parseFile = async (file: File): Promise<Transaction[]> => {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      try {
+        const fileData = e.target?.result;
+        
+        // Instantiate the worker
+        const worker = new ParserWorker();
+
+        worker.onmessage = (event) => {
+          if (event.data.success) {
+            resolve(event.data.data);
+          } else {
+            reject(new Error(event.data.error));
+          }
+          worker.terminate();
+        };
+
+        worker.onerror = (error) => {
+          reject(error);
+          worker.terminate();
+        };
+
+        worker.postMessage({ fileData, extension });
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    reader.onerror = () => reject(new Error('Erro ao ler o arquivo.'));
+
+    if (extension === 'xlsx' || extension === 'xls') {
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.readAsText(file);
+    }
+  });
 };

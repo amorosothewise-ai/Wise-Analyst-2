@@ -4,17 +4,26 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "vite build",
-    "preview": "vite preview"
+    "lint": "tsc",
+    "preview": "vite preview",
+    "start": "node server.ts"
   },
   "dependencies": {
+    "@google/genai": "^1.44.0",
+    "express": "^5.2.1",
+    "localforage": "^1.10.0",
     "lucide-react": "^0.454.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "recharts": "^2.12.7"
+    "react-markdown": "^10.1.0",
+    "recharts": "^2.12.7",
+    "tsx": "^4.21.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

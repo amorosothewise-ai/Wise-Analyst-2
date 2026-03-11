@@ -1,12 +1,22 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import localforage from 'localforage';
 import { 
   Upload, Moon, Sun, TrendingUp, DollarSign, Users, 
-  ShoppingCart, Activity, FileText, AlertCircle, Filter, Calendar
+  ShoppingCart, Activity, FileText, AlertCircle, Filter, Sparkles
 } from 'lucide-react';
 import { Transaction } from './types';
-import { parseCSV, calculateStats, formatCurrency, filterTransactions } from './utils/helpers';
+import { parseFile, calculateStats, formatCurrency, filterTransactions, normalizeName } from './utils/helpers';
 import { RevenueAreaChart, TopPackagesBarChart, GenericDonutChart } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
+import { ClientModal } from './components/ClientModal';
+import { AIInsights } from './components/AIInsights';
+import { AIChat } from './components/AIChat';
+
+// Configure localforage
+localforage.config({
+  name: 'WiseAnalyst',
+  storeName: 'transactions_store'
+});
 
 // Component defined outside to prevent re-creation on every render
 const KPICard = ({ title, value, subtext, icon: Icon, colorClass }: any) => (
@@ -25,22 +35,51 @@ const KPICard = ({ title, value, subtext, icon: Icon, colorClass }: any) => (
 const App: React.FC = () => {
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [darkMode, setDarkMode] = useState(true);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // Start loading to fetch from DB
   const [error, setError] = useState<string | null>(null);
 
   // Filters State
   const [selectedOperator, setSelectedOperator] = useState<string>('Todos');
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
+  const [selectedClientName, setSelectedClientName] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'ai'>('dashboard');
 
+  // Load initial data and theme
   useEffect(() => {
-    const isDark = localStorage.getItem('theme') !== 'light';
-    setDarkMode(isDark);
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    const initApp = async () => {
+      // Theme
+      const isDark = localStorage.getItem('theme') !== 'light';
+      setDarkMode(isDark);
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+
+      // Data
+      try {
+        const storedData = await localforage.getItem<Transaction[]>('transactions');
+        if (storedData && storedData.length > 0) {
+          setAllTransactions(storedData);
+        }
+      } catch (err) {
+        console.error("Error loading data from IndexedDB:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initApp();
   }, []);
+
+  // Save data when transactions change
+  useEffect(() => {
+    if (allTransactions.length > 0) {
+      localforage.setItem('transactions', allTransactions).catch(err => {
+        console.error("Error saving data to IndexedDB:", err);
+      });
+    }
+  }, [allTransactions]);
 
   const toggleTheme = () => {
     const newMode = !darkMode;
@@ -53,45 +92,55 @@ const App: React.FC = () => {
     }
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setLoading(true);
     setError(null);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const text = e.target?.result as string;
-        const parsedData = parseCSV(text);
-        
-        if (parsedData.length === 0) {
-          setError("O arquivo CSV parece vazio ou mal formatado. Verifique os delimitadores (; ou ,) e cabeçalhos.");
-        } else {
-          setAllTransactions(parsedData);
-          // Reset filters on new upload
-          setSelectedOperator('Todos');
-          setDateRange({ start: '', end: '' });
-        }
-      } catch (err) {
-        setError("Erro ao processar o arquivo. Certifique-se que é um CSV válido.");
-        console.error(err);
-      } finally {
-        setLoading(false);
+    try {
+      const parsedData = await parseFile(file);
+      
+      if (parsedData.length === 0) {
+        setError("O arquivo parece vazio ou mal formatado. Verifique os dados.");
+      } else {
+        setAllTransactions(parsedData);
+        // Reset filters on new upload
+        setSelectedOperator('Todos');
+        setDateRange({ start: '', end: '' });
       }
-    };
-    reader.readAsText(file);
+    } catch (err) {
+      setError("Erro ao processar o arquivo. Certifique-se que é um formato suportado (CSV, JSON, XLSX).");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const clearData = async () => {
+    if (window.confirm('Tem certeza que deseja limpar todos os dados? Isso não pode ser desfeito.')) {
+      setAllTransactions([]);
+      await localforage.removeItem('transactions');
+      setSelectedOperator('Todos');
+      setDateRange({ start: '', end: '' });
+    }
   };
 
   // Helper for preset date buttons
-  const applyDatePreset = (preset: 'today' | 'month' | 'year' | 'all') => {
+  const applyDatePreset = (preset: 'today' | 'week' | 'month' | 'year' | 'all') => {
     const today = new Date();
     const end = today.toISOString().split('T')[0];
     let start = '';
 
     if (preset === 'today') {
         start = end;
+    } else if (preset === 'week') {
+        const d = new Date(today);
+        const day = d.getDay(); // 0 (Sun) to 6 (Sat)
+        const diff = d.getDate() - day;
+        const startOfWeek = new Date(d.setDate(diff));
+        start = startOfWeek.toISOString().split('T')[0];
     } else if (preset === 'month') {
         const d = new Date(today.getFullYear(), today.getMonth(), 1);
         start = d.toISOString().split('T')[0];
@@ -130,6 +179,13 @@ const App: React.FC = () => {
     return calculateStats(filteredTransactions);
   }, [filteredTransactions, allTransactions]);
 
+  // Get transactions for selected client
+  const clientTransactions = useMemo(() => {
+    if (!selectedClientName) return [];
+    const normalizedSelected = normalizeName(selectedClientName);
+    return allTransactions.filter(t => normalizeName(t.client) === normalizedSelected);
+  }, [allTransactions, selectedClientName]);
+
   return (
     <div className="min-h-screen w-full bg-gray-50 dark:bg-dark transition-colors duration-300 pb-20">
       {/* Navbar */}
@@ -144,11 +200,20 @@ const App: React.FC = () => {
             </div>
             <div className="flex items-center gap-4">
                {allTransactions.length > 0 && (
-                <label className="cursor-pointer bg-primary hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2">
-                  <Upload size={16} />
-                  <span className="hidden sm:inline">Novo CSV</span>
-                  <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-                </label>
+                <>
+                  <button 
+                    onClick={clearData}
+                    className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2"
+                    title="Limpar todos os dados"
+                  >
+                    <span className="hidden sm:inline">Limpar Dados</span>
+                  </button>
+                  <label className="cursor-pointer bg-primary hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2">
+                    <Upload size={16} />
+                    <span className="hidden sm:inline">Novo Arquivo</span>
+                    <input type="file" accept=".csv, .json, .xlsx, .xls" onChange={handleFileUpload} className="hidden" />
+                  </label>
+                </>
                )}
               <button 
                 onClick={toggleTheme}
@@ -172,7 +237,7 @@ const App: React.FC = () => {
                 </div>
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Importar Dados Financeiros</h2>
                 <p className="text-gray-500 dark:text-gray-400 mb-8">
-                  Carregue seu arquivo CSV para gerar o dashboard. O sistema detecta colunas e separadores automaticamente.
+                  Carregue seu arquivo de dados para gerar o dashboard. O sistema suporta CSV, JSON e Excel.
                 </p>
                 
                 <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800/50 transition">
@@ -181,9 +246,9 @@ const App: React.FC = () => {
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       <span className="font-semibold">Clique para enviar</span> ou arraste e solte
                     </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">CSV (Máx. 10MB)</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">CSV, JSON ou Excel (Máx. 10MB)</p>
                   </div>
-                  <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+                  <input type="file" accept=".csv, .json, .xlsx, .xls" className="hidden" onChange={handleFileUpload} />
                 </label>
 
                 {loading && <p className="mt-4 text-primary animate-pulse">Processando dados...</p>}
@@ -200,167 +265,204 @@ const App: React.FC = () => {
           <div className="space-y-6 animate-fade-in w-full">
             
             {/* Filter Bar */}
-            <div className="bg-white dark:bg-dark-card p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between">
+            <div className="bg-white dark:bg-dark-card p-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row gap-6 items-start xl:items-end justify-between">
               
-              {/* Operator */}
-              <div className="flex items-center gap-3 w-full xl:w-auto">
-                 <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                    <Filter size={20} className="text-primary" />
-                    <span className="font-semibold text-sm hidden sm:inline">Filtros:</span>
-                 </div>
-                 <div className="relative flex-grow sm:flex-grow-0">
-                  <select 
-                    value={selectedOperator}
-                    onChange={(e) => setSelectedOperator(e.target.value)}
-                    className="w-full sm:w-48 appearance-none bg-gray-50 dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 py-2 px-4 pr-8 rounded-lg leading-tight focus:outline-none focus:border-primary transition-colors cursor-pointer text-sm"
-                  >
-                    {operators.map(op => (
-                      <option key={op} value={op}>{op}</option>
-                    ))}
-                  </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700 dark:text-gray-400">
-                    <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+              <div className="flex flex-col sm:flex-row gap-6 w-full xl:w-auto items-start sm:items-end">
+                {/* Operator */}
+                <div className="flex flex-col gap-1.5 w-full sm:w-auto">
+                  <div className="flex items-center gap-2 ml-1">
+                    <Filter size={14} className="text-primary" />
+                    <label className="text-[10px] uppercase font-extrabold text-gray-400 dark:text-gray-500 tracking-wider">Operadora</label>
+                  </div>
+                  <div className="relative w-full sm:w-48">
+                    <select 
+                      value={selectedOperator}
+                      onChange={(e) => setSelectedOperator(e.target.value)}
+                      className="w-full appearance-none bg-gray-50 dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 py-2.5 px-4 pr-8 rounded-xl leading-tight focus:outline-none focus:border-primary transition-colors cursor-pointer text-sm font-semibold"
+                    >
+                      {operators.map(op => (
+                        <option key={op} value={op}>{op}</option>
+                      ))}
+                    </select>
+                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700 dark:text-gray-400">
+                      <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Date Filters */}
+                <div className="flex flex-wrap items-center gap-4 w-full sm:w-auto">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] uppercase font-extrabold text-gray-400 dark:text-gray-500 ml-1 tracking-wider">Data Inicial</label>
+                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-gray-700 focus-within:border-primary transition-colors">
+                      <input 
+                          type="date" 
+                          value={dateRange.start}
+                          onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                          className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none w-32 font-medium"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] uppercase font-extrabold text-gray-400 dark:text-gray-500 ml-1 tracking-wider">Data Final</label>
+                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-gray-700 focus-within:border-primary transition-colors">
+                      <input 
+                          type="date" 
+                          value={dateRange.end}
+                          onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                          className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none w-32 font-medium"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Date Filters */}
-              <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto items-start sm:items-center">
-                
-                {/* Inputs */}
-                <div className="flex items-center gap-2 bg-gray-50 dark:bg-slate-800 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
-                   <Calendar size={16} className="ml-2 text-gray-400" />
-                   <input 
-                      type="date" 
-                      value={dateRange.start}
-                      onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                      className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none p-1 w-32"
-                   />
-                   <span className="text-gray-400 text-xs">até</span>
-                   <input 
-                      type="date" 
-                      value={dateRange.end}
-                      onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                      className="bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none p-1 w-32"
-                   />
+              {/* Presets */}
+              <div className="flex flex-col gap-1.5 w-full xl:w-auto">
+                <label className="text-[10px] uppercase font-extrabold text-gray-400 dark:text-gray-500 ml-1 tracking-wider hidden xl:block">Atalhos de Período</label>
+                <div className="flex gap-1 overflow-x-auto pb-1 sm:pb-0 scrollbar-hide">
+                  <button onClick={() => applyDatePreset('today')} className="px-4 py-2 text-xs font-bold rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition-all active:scale-95">Hoje</button>
+                  <button onClick={() => applyDatePreset('week')} className="px-4 py-2 text-xs font-bold rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition-all active:scale-95">Semana</button>
+                  <button onClick={() => applyDatePreset('month')} className="px-4 py-2 text-xs font-bold rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition-all active:scale-95 whitespace-nowrap">Mês</button>
+                  <button onClick={() => applyDatePreset('year')} className="px-4 py-2 text-xs font-bold rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition-all active:scale-95 whitespace-nowrap">Ano</button>
+                  <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1 self-center"></div>
+                  <button onClick={() => applyDatePreset('all')} className="px-4 py-2 text-xs font-bold rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 transition-all active:scale-95">Limpar</button>
                 </div>
-
-                {/* Presets */}
-                <div className="flex gap-1 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
-                  <button onClick={() => applyDatePreset('today')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition">Hoje</button>
-                  <button onClick={() => applyDatePreset('month')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition whitespace-nowrap">Este Mês</button>
-                  <button onClick={() => applyDatePreset('year')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-600 dark:text-gray-300 transition whitespace-nowrap">Este Ano</button>
-                  <button onClick={() => applyDatePreset('all')} className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 transition">Limpar</button>
-                </div>
-
               </div>
             </div>
 
+            {/* Navigation Tabs */}
+            {stats && (
+              <div className="flex items-center gap-2 bg-white dark:bg-dark-card p-1 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 w-fit">
+                <button 
+                  onClick={() => setActiveTab('dashboard')}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'dashboard' ? 'bg-primary text-white shadow-md' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                >
+                  Dashboard
+                </button>
+                <button 
+                  onClick={() => setActiveTab('ai')}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'ai' ? 'bg-primary text-white shadow-md' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                >
+                  <Sparkles size={16} />
+                  Relatório IA
+                </button>
+              </div>
+            )}
+
             {stats ? (
-              <>
-                {/* KPIs */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-                  <KPICard 
-                    title="Receita" 
-                    value={formatCurrency(stats.totalRevenue)} 
-                    icon={DollarSign} 
-                    colorClass="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
-                  />
-                  <KPICard 
-                    title="Lucro" 
-                    value={formatCurrency(stats.totalProfit)} 
-                    icon={TrendingUp} 
-                    colorClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400"
-                  />
-                  <KPICard 
-                    title="Custos" 
-                    value={formatCurrency(stats.totalCost)} 
-                    icon={Activity} 
-                    colorClass="bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
-                  />
-                  <KPICard 
-                    title="Qtd. Vendas" 
-                    value={stats.salesCount} 
-                    icon={ShoppingCart} 
-                    colorClass="bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400"
-                  />
-                  <KPICard 
-                    title="Ticket Médio" 
-                    value={formatCurrency(stats.avgTicket)} 
-                    icon={Users} 
-                    colorClass="bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400"
-                  />
-                </div>
+              activeTab === 'dashboard' ? (
+                <>
+                  {/* KPIs */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                    <KPICard 
+                      title="Receita" 
+                      value={formatCurrency(stats.totalRevenue)} 
+                      icon={DollarSign} 
+                      colorClass="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+                    />
+                    <KPICard 
+                      title="Lucro" 
+                      value={formatCurrency(stats.totalProfit)} 
+                      icon={TrendingUp} 
+                      colorClass="bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400"
+                    />
+                    <KPICard 
+                      title="Custos" 
+                      value={formatCurrency(stats.totalCost)} 
+                      icon={Activity} 
+                      colorClass="bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                    />
+                    <KPICard 
+                      title="Qtd. Vendas" 
+                      value={stats.salesCount} 
+                      icon={ShoppingCart} 
+                      colorClass="bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400"
+                    />
+                    <KPICard 
+                      title="Ticket Médio" 
+                      value={formatCurrency(stats.avgTicket)} 
+                      icon={Users} 
+                      colorClass="bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400"
+                    />
+                  </div>
 
-                {/* Charts Row 1 */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  <div className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-                    <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Evolução da Receita</h3>
-                    <RevenueAreaChart data={stats.revenueOverTime} />
+                  {/* Charts Row 1 */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+                      <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Evolução da Receita</h3>
+                      <RevenueAreaChart data={stats.revenueOverTime} />
+                    </div>
+                    <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+                      <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Divisão por Operadora</h3>
+                      <GenericDonutChart data={stats.topOperators} />
+                    </div>
                   </div>
-                  <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-                    <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Divisão por Operadora</h3>
-                    <GenericDonutChart data={stats.topOperators} />
-                  </div>
-                </div>
 
-                {/* Charts Row 2 */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-                    <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Por Categoria</h3>
-                    <GenericDonutChart data={stats.topCategories} />
-                  </div>
-                  <div className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-                    <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Top 10 Pacotes Vendidos</h3>
-                    <TopPackagesBarChart data={stats.topPackages} />
-                  </div>
-                </div>
-                
-                {/* Status Chart */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 lg:col-span-1">
-                      <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Status das Transações</h3>
-                      <GenericDonutChart data={stats.statusDistribution} isStatus />
+                  {/* Charts Row 2 */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+                      <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Por Categoria</h3>
+                      <GenericDonutChart data={stats.topCategories} />
                     </div>
-                    <div className="lg:col-span-2 bg-transparent hidden lg:block">
-                        {/* Spacer */}
+                    <div className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+                      <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Top 10 Pacotes Vendidos</h3>
+                      <TopPackagesBarChart data={stats.topPackages} />
                     </div>
-                </div>
+                  </div>
+                  
+                  {/* Status Chart */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <div className="bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 lg:col-span-1">
+                        <h3 className="text-lg font-semibold mb-6 text-gray-800 dark:text-white">Status das Transações</h3>
+                        <GenericDonutChart data={stats.statusDistribution} isStatus />
+                      </div>
+                      <div className="lg:col-span-2 bg-transparent hidden lg:block">
+                          {/* Spacer */}
+                      </div>
+                  </div>
 
-                {/* Top Clients & Transactions */}
-                <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-                  {/* Top Performers List */}
-                  <div className="xl:col-span-1 bg-white dark:bg-dark-card rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-                    <div className="p-5 border-b border-gray-200 dark:border-gray-700">
-                      <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Top 5 Clientes</h3>
-                    </div>
-                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                      {stats.topClients.map((client, idx) => (
-                        <div key={idx} className="p-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-700/50 transition">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm">
-                              {idx + 1}
+                  {/* Top Clients & Transactions */}
+                  <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+                    {/* Top Performers List */}
+                    <div className="xl:col-span-1 bg-white dark:bg-dark-card rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+                      <div className="p-5 border-b border-gray-200 dark:border-gray-700">
+                        <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Top 5 Clientes</h3>
+                      </div>
+                      <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                        {stats.topClients.map((client, idx) => (
+                          <button 
+                            key={idx} 
+                            onClick={() => setSelectedClientName(client.name)}
+                            className="w-full p-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-700/50 transition text-left group"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm group-hover:bg-primary group-hover:text-white transition-colors">
+                                {idx + 1}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-gray-900 dark:text-white truncate group-hover:text-primary transition-colors">{client.name}</p>
+                                <p className="text-xs text-gray-500">{client.transactions} transações</p>
+                              </div>
                             </div>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{client.name}</p>
-                              <p className="text-xs text-gray-500">{client.transactions} transações</p>
-                            </div>
-                          </div>
-                          <span className="text-sm font-bold text-gray-700 dark:text-gray-300 ml-2 whitespace-nowrap">{formatCurrency(client.totalSpent)}</span>
-                        </div>
-                      ))}
-                      {stats.topClients.length === 0 && (
-                        <div className="p-4 text-center text-gray-500 text-sm">Nenhum cliente neste período.</div>
-                      )}
+                            <span className="text-sm font-bold text-gray-700 dark:text-gray-300 ml-2 whitespace-nowrap">{formatCurrency(client.totalSpent)}</span>
+                          </button>
+                        ))}
+                        {stats.topClients.length === 0 && (
+                          <div className="p-4 text-center text-gray-500 text-sm">Nenhum cliente neste período.</div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Main Table */}
+                    <div className="xl:col-span-3">
+                      <TransactionTable data={filteredTransactions} />
                     </div>
                   </div>
-
-                  {/* Main Table */}
-                  <div className="xl:col-span-3">
-                    <TransactionTable data={filteredTransactions} />
-                  </div>
-                </div>
-              </>
+                </>
+              ) : (
+                <AIInsights stats={stats} transactions={filteredTransactions} />
+              )
             ) : (
               <div className="text-center py-20 bg-white dark:bg-dark-card rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
                 <AlertCircle className="mx-auto h-12 w-12 text-gray-400" />
@@ -371,6 +473,18 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* Client Details Modal */}
+      {selectedClientName && (
+        <ClientModal 
+          clientName={selectedClientName}
+          transactions={clientTransactions}
+          onClose={() => setSelectedClientName(null)}
+        />
+      )}
+
+      {/* AI Chat Widget */}
+      {stats && <AIChat stats={stats} transactions={allTransactions} />}
     </div>
   );
 };
